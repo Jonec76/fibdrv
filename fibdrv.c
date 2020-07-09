@@ -19,97 +19,131 @@ MODULE_VERSION("0.1");
  * ssize_t can't fit the number > 92
  */
 #define MAX_LENGTH 100
+#define u128_l 128
 
 static dev_t fib_dev = 0;
 static struct cdev *fib_cdev;
 static struct class *fib_class;
 static DEFINE_MUTEX(fib_mutex);
 
+static ktime_t kt;
 
-struct BigN {
-    unsigned long long lower, upper;
+
+struct u128 {
+    int num[u128_l];
 };
 
-static inline void addBigN(struct BigN *output, struct BigN x, struct BigN y)
+static inline void init_list(struct u128 *n, int num)
 {
-    output->upper = x.upper + y.upper;
-    if (y.lower > __LONG_LONG_MAX__ - x.lower) {
-        output->upper++;
-        output->lower = (x.lower - __LONG_LONG_MAX__) + y.lower;
-        return;
+    int i = 0;
+    memset(n->num, 0, u128_l * sizeof(int));
+    while (num > 0) {
+        n->num[i] = num % 10;
+        i++;
+        num /= 10;
     }
-    output->lower = x.lower + y.lower;
 }
 
-static int *get_res(struct BigN f, int res[])
+static inline void u128_mul(struct u128 *a, struct u128 *b, struct u128 *output)
 {
-    unsigned long long mcand_digit = f.upper;
-    unsigned long long lower = f.lower;
+    int *mcand = b->num;
+    int *mplier = a->num;
+    int c_in = 0;
 
-    int start_index = 0;
-    int init_index = 0;
+    memset(output->num, 0, u128_l * sizeof(int));
 
-    while (lower > 0) {
-        res[init_index] = lower % 10;
-        lower /= 10;
-        init_index++;
-    }
-
-    while (mcand_digit > 0) {
-        long long mplier_digit = __LONG_LONG_MAX__;
-        int j = start_index;
-        int c_in = 0;
-
-        while (mplier_digit > 0) {
-            int mul = (mcand_digit % 10) * (mplier_digit % 10) + c_in + res[j];
+    for (int i = 0; i < u128_l; i++) {
+        for (int j = 0; j < u128_l; j++) {
+            if (i + j > u128_l - 1)
+                break;
+            int mul = mplier[i] * mcand[j] + c_in + output->num[i + j];
             c_in = mul / 10;
-            res[j] = mul % 10;
-            j++;
-            mplier_digit = mplier_digit / 10;
+            output->num[i + j] = mul % 10;
         }
-        if (c_in > 0)
-            res[j] += c_in;
-        mcand_digit = mcand_digit / 10;
-        start_index++;
     }
-    return res;
 }
 
-static void fib_sequence(long long k, char *buf)
+static inline void u128_sub(struct u128 *a, struct u128 *b, struct u128 *output)
 {
-    /* FIXME: use clz/ctz and fast algorithms to speed up */
-    struct BigN f[k + 2];
-    struct BigN output[1];
-    int res[128];
-    memset(res, 0, sizeof(res));
-
-    f[0].lower = 0;
-    f[0].upper = 0;
-    f[1].lower = 1;
-    f[1].upper = 0;
-
-    for (int i = 2; i <= k; i++) {
-        addBigN(output, f[i - 1], f[i - 2]);
-        f[i].lower = output->lower;
-        f[i].upper = output->upper;
+    for (int i = 0; i < u128_l; i++) {
+        int diff = a->num[i] - b->num[i];
+        if (diff < 0) {
+            diff += 10;
+            if (i + 1 < u128_l)
+                a->num[i + 1] -= 1;
+        }
+        output->num[i] = diff;
     }
-    get_res(f[k], res);
-    char test[128];
-    memset(test, '0', 128 * sizeof(char));
+}
 
+static inline void u128_add(struct u128 *a, struct u128 *b, struct u128 *output)
+{
+    int c_in = 0;
+    for (int i = 0; i < u128_l; i++) {
+        int sum = a->num[i] + b->num[i] + c_in;
+        c_in = sum / 10;
+        output->num[i] = sum % 10;
+    }
+}
+
+static void fast_doubling(int k, char *buf)
+{
+    struct u128 a[1], b[1], const_two[1], t1[1], t2[1], tmp[1], tmp2[1];
+    init_list(t1, 0);
+    init_list(t2, 0);
+    init_list(tmp, 0);
+    init_list(tmp2, 0);
+    init_list(a, 0);
+    init_list(b, 1);
+    init_list(const_two, 2);
+
+    int run = 32 - __builtin_clz(k);
+
+    for (int i = 0; i < run; i++) {
+        int base, cur_digit;
+        base = 1 << run - i - 1;
+        cur_digit = k / base;
+
+        // unsigned long long t1 = a*(2*b - a);
+        u128_mul(const_two, b, t1);
+        u128_sub(t1, a, tmp);
+        u128_mul(a, tmp, t1);
+
+        // unsigned long long t2 = b*b + a*a;
+        u128_mul(b, b, tmp);
+        u128_mul(a, a, tmp2);
+        u128_add(tmp, tmp2, t2);
+
+        // a = t1; b = t2; // m *= 2
+        for (int i = 0; i < u128_l; i++) {
+            a->num[i] = t1->num[i];
+            b->num[i] = t2->num[i];
+        }
+
+        if (cur_digit == 1) {
+            // t1 = a + b; // m++
+            u128_add(t1, t2, tmp);
+            for (int i = 0; i < u128_l; i++) {
+                a->num[i] = b->num[i];
+                b->num[i] = tmp->num[i];
+            }
+        }
+        k = k % base;
+    }
+    char fib_num[u128_l] = "0";
     bool leading_zero = true;
     int head_position = 0;
-    for (int i = 127; i >= 0; i--) {
-        if (res[i] != 0 && leading_zero) {
+    for (int i = u128_l - 1; i >= 0; i--) {
+        if (a->num[i] != 0 && leading_zero) {
             leading_zero = false;
             head_position = i;
         }
         if (!leading_zero) {
-            test[head_position - i] = res[i] + '0';
+            fib_num[head_position - i] = a->num[i] + '0';
         }
     }
-    test[head_position + 1] = '\0';
-    copy_to_user(buf, test, 128 * sizeof(char));
+    fib_num[head_position + 1] = '\0';
+    copy_to_user(buf, fib_num, u128_l * sizeof(char));
 }
 
 
@@ -134,7 +168,12 @@ static ssize_t fib_read(struct file *file,
                         size_t size,
                         loff_t *offset)
 {
-    fib_sequence(*offset, buf);
+    // kt = ktime_get(); // kernel
+    fast_doubling(*offset, buf);
+    // fib_sequence(*offset, buf);
+    // kt = ktime_sub(ktime_get(), kt); // kernel
+    // kt = ktime_get();  // ker_user
+
     return 0;
 }
 
