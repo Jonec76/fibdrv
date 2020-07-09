@@ -19,18 +19,20 @@ MODULE_VERSION("0.1");
  * ssize_t can't fit the number > 92
  */
 #define MAX_LENGTH 100
+#define u128_l 128
 
 static dev_t fib_dev = 0;
 static struct cdev *fib_cdev;
 static struct class *fib_class;
 static DEFINE_MUTEX(fib_mutex);
 
+// static ktime_t kt;
 
 struct BigN {
     unsigned long long lower, upper;
 };
 
-static inline void addBigN(struct BigN *output, struct BigN x, struct BigN y)
+static inline void big_add(struct BigN *output, struct BigN x, struct BigN y)
 {
     output->upper = x.upper + y.upper;
     if (y.lower > __LONG_LONG_MAX__ - x.lower) {
@@ -41,7 +43,7 @@ static inline void addBigN(struct BigN *output, struct BigN x, struct BigN y)
     output->lower = x.lower + y.lower;
 }
 
-static int *get_res(struct BigN f, int res[])
+static int *get_list(struct BigN f, int res[])
 {
     unsigned long long mcand_digit = f.upper;
     unsigned long long lower = f.lower;
@@ -89,27 +91,27 @@ static void fib_sequence(long long k, char *buf)
     f[1].upper = 0;
 
     for (int i = 2; i <= k; i++) {
-        addBigN(output, f[i - 1], f[i - 2]);
+        big_add(output, f[i - 1], f[i - 2]);
         f[i].lower = output->lower;
         f[i].upper = output->upper;
     }
-    get_res(f[k], res);
-    char test[128];
-    memset(test, '0', 128 * sizeof(char));
+    get_list(f[k], res);
+    char c_res[128];
+    memset(c_res, '0', 128 * sizeof(char));
 
     bool leading_zero = true;
     int head_position = 0;
-    for (int i = 127; i >= 0; i--) {
+    for (int i = u128_l - 1; i >= 0; i--) {
         if (res[i] != 0 && leading_zero) {
             leading_zero = false;
             head_position = i;
         }
         if (!leading_zero) {
-            test[head_position - i] = res[i] + '0';
+            c_res[head_position - i] = res[i] + '0';
         }
     }
-    test[head_position + 1] = '\0';
-    copy_to_user(buf, test, 128 * sizeof(char));
+    c_res[head_position + 1] = '\0';
+    copy_to_user(buf, c_res, 128 * sizeof(char));
 }
 
 
@@ -134,7 +136,11 @@ static ssize_t fib_read(struct file *file,
                         size_t size,
                         loff_t *offset)
 {
+    // kt = ktime_get(); // kernel
     fib_sequence(*offset, buf);
+    // kt = ktime_sub(ktime_get(), kt); // kernel
+    // kt = ktime_get();  // ker_user
+
     return 0;
 }
 
